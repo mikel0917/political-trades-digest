@@ -99,8 +99,18 @@ def main():
 
     backtest = store.backtest_summary()
 
-    text_body = digest.build_text(new_events, convergences, backtest, snap_cache)
-    html_body = digest.build_html(new_events, convergences, backtest, snap_cache)
+    # FRESH (last 24h) — pulled by event_date, NOT by notified status, so the
+    # user keeps seeing today/yesterday's items at the top even if they were
+    # in yesterday's digest. Recency-by-date, not recency-by-first-seen.
+    from core import briefing as _briefing_mod
+    fresh_24h = store.recent_events(_briefing_mod.FRESH_DAYS)
+    # also include the prices for fresh tickers
+    for e in fresh_24h:
+        if e.get("ticker") and e["ticker"] not in snap_cache:
+            snap_cache[e["ticker"]] = enrich.snapshot(e["ticker"])
+
+    text_body = digest.build_text(new_events, convergences, backtest, snap_cache, fresh_24h)
+    html_body = digest.build_html(new_events, convergences, backtest, snap_cache, fresh_24h)
 
     # priority = anything worth an SMS: a convergence, or a watchlist event
     priority = bool(convergences) or any(

@@ -49,12 +49,12 @@ def _fmt_event_line(ev: dict, snap_cache: dict) -> str:
     return line
 
 
-def build_text(new_events, convergences, backtest, snap_cache):
+def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
     today = dt.date.today().strftime("%A, %B %d, %Y")
     out = [f"POLITICAL & INSIDER TRADES DIGEST — {today}", "=" * 56, ""]
 
     # 0. TLDR briefing
-    headline, paras = briefing.build(new_events, convergences, backtest, snap_cache)
+    headline, paras = briefing.build(new_events, convergences, backtest, snap_cache, fresh_24h)
     out.append(f"TL;DR — {headline}")
     out.append("-" * 56)
     for p in paras:
@@ -131,7 +131,7 @@ def build_text(new_events, convergences, backtest, snap_cache):
 
 # ---- html ----------------------------------------------------------------
 
-def build_html(new_events, convergences, backtest, snap_cache):
+def build_html(new_events, convergences, backtest, snap_cache, fresh_24h=None):
     today = dt.date.today().strftime("%A, %B %d, %Y")
     css = """
     <style>
@@ -185,7 +185,7 @@ def build_html(new_events, convergences, backtest, snap_cache):
          f'<div class="date">{today}</div>']
 
     # TLDR briefing card
-    headline, paras = briefing.build(new_events, convergences, backtest, snap_cache)
+    headline, paras = briefing.build(new_events, convergences, backtest, snap_cache, fresh_24h)
     h.append('<div class="tldr">')
     h.append(f'<h2>TL;DR — {headline}</h2>')
     for p in paras:

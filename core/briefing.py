@@ -83,22 +83,29 @@ KIND_FRAMING = {
 # main entry point
 # ---------------------------------------------------------------------------
 
-def build(new_events, convergences, backtest, snap_cache):
+def build(new_events, convergences, backtest, snap_cache, fresh_24h=None):
     """
     Returns (headline_str, list_of_paragraph_strs). Used by both text and
     HTML digest builders so the TLDR is byte-identical in both.
+
+    fresh_24h: events from the last FRESH_DAYS pulled from the store by
+    event_date (not by notified-status), so the user keeps seeing recent
+    items at the top even if they appeared in yesterday's digest. If None,
+    falls back to filtering new_events (legacy behaviour).
     """
     today = dt.date.today()
     n_events = len(new_events)
     n_conv = len(convergences)
     wl_hits = sorted({e["ticker"] for e in new_events
                       if e.get("ticker") in config.WATCHLIST})
-    fresh = _fresh_events(new_events, today)
+    fresh = _fresh_events(fresh_24h if fresh_24h is not None else new_events, today)
 
     headline = _headline(n_events, n_conv, wl_hits, len(fresh))
 
-    # --- quiet-day path ---
-    if not n_events and not n_conv:
+    # --- quiet-day path — only if there is truly nothing to surface,
+    # including fresh-by-date items (which can be non-empty even when
+    # n_events == 0, since fresh is pulled by date not notified-status).
+    if not n_events and not n_conv and not fresh:
         return headline, _quiet_day_paragraphs(backtest)
 
     paras = []
