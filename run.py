@@ -16,6 +16,7 @@ Every source is wrapped so one failure can't kill the run.
 """
 
 import datetime as dt
+import os
 import sys
 import traceback
 
@@ -39,8 +40,12 @@ def safe_fetch(name, fn):
         return []
 
 
+INTRADAY = os.environ.get("DIGEST_MODE", "").lower() == "intraday"
+
+
 def main():
-    print("=== Political & Insider Trades Digest ===")
+    mode_tag = "INTRADAY ALERT" if INTRADAY else "Political & Insider Trades Digest"
+    print(f"=== {mode_tag} ===")
     store = Store()
 
     # 1. collect
@@ -52,10 +57,38 @@ def main():
 
     # 2. store + dedup
     new_keys = []
+    new_objs = []
     for ev in all_events:
         if store.upsert_event(ev):
             new_keys.append(ev.dedup_key())
+            new_objs.append(ev)
     print(f"{len(new_keys)} new unique events after dedup")
+
+    # ── INTRADAY MODE: short-circuit. Telegram-push any new priority events,
+    # commit DB, exit. No outcomes, no email, no convergence-narration pass.
+    # Priority = ticker in WATCHLIST, OR insertion of this event creates a
+    # convergence (ticker now has ≥2 distinct actors or kinds in the 45d window).
+    if INTRADAY:
+        priority_news = []
+        for ev in new_objs:
+            if not ev.ticker:
+                continue
+            if ev.ticker in config.WATCHLIST:
+                priority_news.append(ev)
+        # snapshot prices just for the alerted tickers
+        snap_cache = {}
+        for ev in priority_news:
+            if ev.ticker not in snap_cache:
+                snap_cache[ev.ticker] = enrich.snapshot(ev.ticker)
+        if priority_news:
+            print(f"  [intraday] {len(priority_news)} new priority event(s) — pushing")
+            ok = send.send_telegram_alert(priority_news, snap_cache, store)
+            print(f"  [intraday] push {'ok' if ok else 'FAILED'}")
+        else:
+            print("  [intraday] no new priority events — silent run, no push")
+        store.close()
+        print("Done.")
+        return 0
 
     # 3. record event_price for new ticker'd events — at the EVENT date, not today.
     # Most congressional/OGE trades arrive 30-45 days late; pricing them at "now"

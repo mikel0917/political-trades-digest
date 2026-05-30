@@ -1,0 +1,62 @@
+name: Intraday Alerts
+
+# Runs every 30 minutes during US market hours, M-F. Each run:
+#  - Polls news / EDGAR / congressional sources
+#  - If a NEW watchlist event was ingested, pushes a Telegram message
+#  - Does NOT email (the daily 7am workflow does that)
+#  - Does NOT update +1/+7/+30 outcomes (the daily workflow does that)
+#
+# 12:00 - 22:00 UTC covers 7am - 5pm ET (EDT) and 8am - 6pm ET (EST), so we
+# don't need to adjust twice a year for daylight savings.
+on:
+  schedule:
+    - cron: "*/30 12-22 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: digest          # share the gate with the daily workflow — they
+  cancel-in-progress: false  # both push digest.db; never let two races
+
+jobs:
+  intraday:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run intraday alerts
+        env:
+          DIGEST_MODE: intraday
+          # Telegram push (required for intraday to actually notify)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Same data secrets the daily workflow uses
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY:     ${{ secrets.FMP_API_KEY }}
+          EDGAR_UA:        ${{ secrets.EDGAR_UA }}
+        run: python run.py
+
+      - name: Persist database (dedup history)
+        run: |
+          git config user.name  "digest-bot"
+          git config user.email "digest-bot@users.noreply.github.com"
+          git add -f digest.db
+          if git diff --staged --quiet; then
+            echo "no DB changes to commit"
+            exit 0
+          fi
+          git commit -m "intraday $(date -u +%FT%H:%MZ)"
+          git pull --rebase origin main || true
+          git push

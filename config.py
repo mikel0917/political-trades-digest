@@ -171,6 +171,18 @@ TELNYX_FROM = os.environ.get("TELNYX_FROM_NUMBER", "")
 TELNYX_TO = os.environ.get("TELNYX_TO_NUMBER", "")
 SMS_ONLY_FOR_PRIORITY = True  # don't text on boring days
 
+# Telegram push for INTRADAY alerts (separate from the daily 7am email).
+# When run.py is invoked with env var DIGEST_MODE=intraday, it skips the
+# email entirely and only pushes a Telegram message IF a new watchlist or
+# convergence event was ingested this run. Cost: free.
+# Setup:
+#   1. On Telegram, message @BotFather → /newbot → get bot token
+#   2. Message your new bot something so it has a conversation
+#   3. Message @userinfobot to get your numeric Telegram chat ID
+#   4. Set both as GH secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+
 # Optional Finnhub key (free tier). If absent, we fall back to yfinance for
 # all price data, which is free but flakier. Either works.
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
