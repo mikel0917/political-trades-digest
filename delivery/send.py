@@ -98,13 +98,13 @@ def send_telegram_alert(events, snap_cache, store=None):
     if not events:
         return True
 
-    # Build a short HTML-formatted message. Telegram allows <b>, <i>, <code>,
-    # <a href=...>, but not <br> — use \n for newlines.
-    lines = [f"⚡ <b>Intraday alert — {len(events)} new "
-             f"event{'s' if len(events) != 1 else ''}</b>"]
-    lines.append("")
+    # Build each event as a self-contained block, then pack blocks into
+    # ≤3800-char messages so we never split mid-tag. Telegram limit is 4096.
+    HEADER = (f"⚡ <b>Intraday alert — {len(events)} new "
+              f"event{'s' if len(events) != 1 else ''}</b>")
 
-    for ev in events[:10]:
+    blocks = []
+    for ev in events[:20]:  # hard cap to avoid pathological floods
         ticker = _get(ev, "ticker") or "—"
         kind = _kind_tag(_get(ev, "kind"))
         actor = _get(ev, "actor") or ""
@@ -114,47 +114,70 @@ def send_telegram_alert(events, snap_cache, store=None):
         head = f"<b>{ticker}</b>"
         if ticker in config.WATCHLIST:
             head = f"⭐ {head} <i>({config.WATCHLIST[ticker]})</i>"
-        lines.append(f"{head}  —  {kind}")
 
+        block_lines = [f"{head}  —  {kind}"]
         if actor and actor not in ("News", "Insider", "Congress"):
-            lines.append(f"by <i>{actor}</i>")
-
-        lines.append(headline)
-
+            block_lines.append(f"by <i>{actor}</i>")
+        block_lines.append(_html_escape(headline))
         if snap and snap.get("price"):
             day_bit = ""
             if snap.get("day_pct") is not None:
                 arrow = "▲" if snap["day_pct"] >= 0 else "▼"
                 day_bit = f" {arrow}{abs(snap['day_pct']):.1f}% today"
-            lines.append(f"now ${snap['price']:.2f}{day_bit}")
-
+            block_lines.append(f"now ${snap['price']:.2f}{day_bit}")
         url = _get(ev, "url")
         if url:
-            lines.append(f'<a href="{url}">source</a>')
+            block_lines.append(f'<a href="{_html_escape(url)}">source</a>')
+        blocks.append("\n".join(block_lines))
 
-        lines.append("")  # blank line between events
+    # Pack blocks into messages
+    MAX = 3800
+    messages = []
+    current = [HEADER]
+    current_len = len(HEADER) + 2
+    for block in blocks:
+        block_with_sep = "\n\n" + block
+        if current_len + len(block_with_sep) > MAX and len(current) > 1:
+            messages.append("\n\n".join(current))
+            current = [f"⚡ <b>Intraday alert (cont'd)</b>", block]
+            current_len = len(current[0]) + len(block_with_sep)
+        else:
+            current.append(block)
+            current_len += len(block_with_sep)
+    if current:
+        messages.append("\n\n".join(current))
 
-    body = "\n".join(lines).strip()
+    print(f"  [telegram] intraday alert split into {len(messages)} message(s)")
+    all_ok = True
+    for i, msg in enumerate(messages, 1):
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": config.TELEGRAM_CHAT_ID,
+                    "text": msg,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+                timeout=10,
+            )
+            ok = 200 <= r.status_code < 300
+            print(f"  [telegram] part {i}/{len(messages)} status {r.status_code}")
+            if not ok:
+                print(f"  [telegram] body: {r.text[:300]}")
+                all_ok = False
+        except Exception as e:
+            print(f"  [telegram] part {i} failed: {e}")
+            all_ok = False
+    return all_ok
 
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": config.TELEGRAM_CHAT_ID,
-                "text": body[:4000],  # Telegram limit is 4096
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-        print(f"  [telegram] status {r.status_code}")
-        ok = 200 <= r.status_code < 300
-        if not ok:
-            print(f"  [telegram] body: {r.text[:300]}")
-        return ok
-    except Exception as e:
-        print(f"  [telegram] failed: {e}")
-        return False
+
+def _html_escape(s):
+    """Escape HTML special chars in headlines / URLs so Telegram HTML parser
+    doesn't choke on stray < > & characters from news titles."""
+    if not s:
+        return ""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def _get(ev, key):
