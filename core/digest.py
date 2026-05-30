@@ -38,52 +38,69 @@ def _pct_since_earliest(events, snap_cache):
     return None
 
 
-def _ticker_order(convergences, new_events):
+def _ticker_order(convergences, new_events, fresh_24h=None):
     """
-    Return a list of (ticker, events_for_card, priority_class) tuples.
+    Return a list of (ticker, events_for_card, priority_class, conv_info).
 
     priority_class is one of: "convergence", "watchlist", "other".
     Each ticker appears at most once. Sorted: convergences first (by
     actor count then kind count), then watchlist names, then others.
+
+    Event source for each card:
+      - convergence ticker -> full 45d event list from convergence detection
+      - watchlist / other ticker -> union of new_events + fresh_24h for that
+        ticker (deduped by dedup_key). This keeps recent-by-date items
+        visible even after they've been marked notified.
     """
     seen = set()
     rows = []
 
-    # convergences — use the full 45d event list from convergence detection
+    # union new_events + fresh_24h, dedup by key
+    combined = {}
+    for e in (new_events or []) + (fresh_24h or []):
+        k = e.get("dedup_key") or id(e)
+        if k not in combined:
+            combined[k] = e
+
+    # convergences first
     for t, info in sorted(
         convergences.items(),
         key=lambda kv: (len(kv[1]["actors"]), len(kv[1]["kinds"])),
         reverse=True,
     ):
-        rows.append((t, sorted(info["events"],
-                                key=lambda e: e["event_date"], reverse=True),
+        rows.append((t,
+                     sorted(info["events"],
+                            key=lambda e: e["event_date"], reverse=True),
                      "convergence", info))
         seen.add(t)
 
-    # watchlist tickers that aren't already convergences — use new events
-    wl_by_ticker = {}
-    for e in new_events:
+    # group remaining events by ticker
+    by_ticker = {}
+    for e in combined.values():
         t = e.get("ticker")
-        if t and t in config.WATCHLIST and t not in seen:
-            wl_by_ticker.setdefault(t, []).append(e)
-    for t in sorted(wl_by_ticker.keys(),
-                    key=lambda t: max(e["event_date"] for e in wl_by_ticker[t]),
+        if t and t not in seen:
+            by_ticker.setdefault(t, []).append(e)
+
+    # watchlist tickers
+    wl_tickers = [t for t in by_ticker if t in config.WATCHLIST]
+    for t in sorted(wl_tickers,
+                    key=lambda t: max(e["event_date"] for e in by_ticker[t]),
                     reverse=True):
-        rows.append((t, sorted(wl_by_ticker[t],
-                                key=lambda e: e["event_date"], reverse=True),
+        rows.append((t,
+                     sorted(by_ticker[t],
+                            key=lambda e: e["event_date"], reverse=True),
                      "watchlist", None))
         seen.add(t)
 
-    # other tickers (firehose-only)
+    # other tickers (firehose only)
     if config.SHOW_FIREHOSE:
-        other_by_ticker = {}
-        for e in new_events:
-            t = e.get("ticker")
-            if t and t not in seen:
-                other_by_ticker.setdefault(t, []).append(e)
-        for t in sorted(other_by_ticker.keys()):
-            rows.append((t, sorted(other_by_ticker[t],
-                                    key=lambda e: e["event_date"], reverse=True),
+        other_tickers = [t for t in by_ticker if t not in seen]
+        for t in sorted(other_tickers,
+                        key=lambda t: max(e["event_date"] for e in by_ticker[t]),
+                        reverse=True):
+            rows.append((t,
+                         sorted(by_ticker[t],
+                                key=lambda e: e["event_date"], reverse=True),
                          "other", None))
             seen.add(t)
 
@@ -130,7 +147,7 @@ def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
         out.append("")
 
     # --- TICKERS TODAY ---
-    rows = _ticker_order(convergences, new_events)
+    rows = _ticker_order(convergences, new_events, fresh_24h)
     if rows:
         out.append("")
         out.append("─" * 64)
@@ -151,17 +168,16 @@ def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
         out.append("BACKTEST — how past signals have performed for you")
         out.append("─" * 64)
         out.append("")
-        out.append(f"  {'Signal':<16} {'Horizon':<9} {'n':>4}  {'Avg %':>8}  {'Win %':>6}")
-        out.append("  " + "─" * 50)
+        out.append(f"  {'Signal':<16}  {'Horizon':>7}  {'n':>3}   {'Avg %':>7}   {'Win %':>5}")
+        out.append("  " + "─" * 52)
         for row in backtest:
             avg = row["avg_pct"] or 0
-            sign = "+" if avg >= 0 else ""
             out.append(
-                f"  {row['kind'][:16]:<16} "
-                f"+{row['horizon_days']:>2}d      "
-                f"{row['n']:>4}  "
-                f"{sign}{avg:>6.1f}%  "
-                f"{(row['win_rate'] or 0)*100:>5.0f}%"
+                f"  {row['kind'][:16]:<16}  "
+                f"{'+' + str(row['horizon_days']) + 'd':>7}  "
+                f"{row['n']:>3}   "
+                f"{avg:>+6.1f}%   "
+                f"{(row['win_rate'] or 0)*100:>4.0f}%"
             )
         out.append("")
 
@@ -312,7 +328,7 @@ def build_html(new_events, convergences, backtest, snap_cache, fresh_24h=None):
     h.append('</div>')
 
     # --- TICKERS TODAY ---
-    rows = _ticker_order(convergences, new_events)
+    rows = _ticker_order(convergences, new_events, fresh_24h)
     if rows:
         h.append(f'<div class="section">Tickers today '
                  f'<span class="sub">— {len(rows)} name'
