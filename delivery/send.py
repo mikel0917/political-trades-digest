@@ -164,6 +164,71 @@ def _get(ev, key):
     return getattr(ev, key, None)
 
 
+def send_telegram_digest(text_body):
+    """
+    Push the FULL daily digest to Telegram, split into chunks at section
+    boundaries so each message stays under Telegram's 4096-char limit.
+    Plain text (no HTML parsing) — preserves the ASCII tables / cards.
+
+    Independent of email delivery: even if Resend fails, the user still
+    gets the digest on Telegram.
+    """
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        print("  [telegram] no token/chat — daily push skipped")
+        return False
+
+    chunks = _split_for_telegram(text_body, max_chunk=3800)
+    print(f"  [telegram] daily digest split into {len(chunks)} message(s)")
+
+    all_ok = True
+    for i, chunk in enumerate(chunks, 1):
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": config.TELEGRAM_CHAT_ID,
+                    "text": chunk,
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            ok = 200 <= r.status_code < 300
+            print(f"  [telegram] part {i}/{len(chunks)} status {r.status_code}")
+            if not ok:
+                print(f"  [telegram] body: {r.text[:200]}")
+                all_ok = False
+        except Exception as e:
+            print(f"  [telegram] part {i} failed: {e}")
+            all_ok = False
+    return all_ok
+
+
+def _split_for_telegram(text, max_chunk=3800):
+    """
+    Split text into chunks of at most `max_chunk` chars, preferring to break
+    at blank lines / section separators rather than mid-paragraph. Returns
+    list of chunks (always at least 1, never empty).
+    """
+    lines = text.split("\n")
+    chunks = []
+    current = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 1  # +1 for newline
+        if current_len + line_len > max_chunk and current:
+            # finalize current chunk
+            chunks.append("\n".join(current).rstrip())
+            current = [line]
+            current_len = line_len
+        else:
+            current.append(line)
+            current_len += line_len
+    if current:
+        chunks.append("\n".join(current).rstrip())
+    # if any single line was somehow longer than max_chunk, hard-truncate
+    return [c[:max_chunk] for c in chunks if c.strip()]
+
+
 def _kind_tag(kind):
     return {
         "endorsement":    "📣 ENDORSEMENT",

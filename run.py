@@ -154,15 +154,16 @@ def main():
     )
 
     delivered = send.deliver(text_body, html_body, priority)
+    # Push the same digest to Telegram, split into chunks under 4096 chars.
+    # Independent of email — even if Resend fails, the user sees it on phone.
+    tg_ok = send.send_telegram_digest(text_body)
 
-    # Only mark events as notified if delivery actually succeeded — otherwise a
-    # Resend outage would silently drop them from tomorrow's digest forever.
-    # When no delivery is configured (e.g. zero-config local run that just writes
-    # the file), we still mark them so the file output isn't repeated daily.
-    if delivered:
+    # Mark events as notified if EITHER channel succeeded. Otherwise, leave
+    # them so they re-attempt on the next run.
+    if delivered or tg_ok:
         store.mark_notified([e["dedup_key"] for e in new_events])
     else:
-        print("  [notify] delivery failed — leaving events unnotified for retry next run")
+        print("  [notify] both channels failed — leaving events unnotified for retry next run")
     store.close()
     print("Done.")
 

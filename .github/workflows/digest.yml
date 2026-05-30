@@ -47,6 +47,9 @@ jobs:
           TELNYX_FROM_NUMBER: ${{ secrets.TELNYX_FROM_NUMBER }}
           TELNYX_TO_NUMBER: ${{ secrets.TELNYX_TO_NUMBER }}
           EDGAR_UA: ${{ secrets.EDGAR_UA }}
+          # Telegram push (daily digest is pushed there too, split into chunks)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python run.py
 
       - name: Upload digest as artifact (debugging)
