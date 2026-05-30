@@ -1,11 +1,16 @@
 name: Daily Trades Digest
 
-# Runs every morning. GitHub cron is in UTC.
-# 11:00 UTC = 7:00 AM US Eastern (EDT). Adjust if you want a different time.
+# Two scheduled runs per day:
+#   - 12:00 UTC = 8:00 AM ET (EDT) / 7:00 AM ET (EST)  → pre-market summary
+#   - 21:00 UTC = 5:00 PM ET (EDT) / 4:00 PM ET (EST)  → after-close summary
+# GH cron doesn't know about DST; times shift ~1h in winter. Acceptable for
+# a "before open / after close" digest — the close window is still inside
+# the trading day in EST and the open one still before bell.
 on:
   schedule:
-    - cron: "0 11 * * *"
-  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+    - cron: "0 12 * * *"   # 8am ET EDT (pre-market)
+    - cron: "0 21 * * *"   # 5pm ET EDT (after-close)
+  workflow_dispatch: {}    # lets you trigger a run manually from the Actions tab
 
 # Needs write permission so it can commit digest.db back to the repo,
 # preserving dedup history + backtest outcomes between runs.
