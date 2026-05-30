@@ -1,16 +1,18 @@
 name: Intraday Alerts
 
-# Runs every 30 minutes during US market hours, M-F. Each run:
+# Runs every 30 minutes during the waking hours of US Eastern, EVERY day
+# (incl. weekends). Trump posts on Truth Social on Sundays and the market
+# reacts on Monday's open; the M-F cron was a mistake. Each run:
 #  - Polls news / EDGAR / congressional sources
-#  - If a NEW watchlist event was ingested, pushes a Telegram message
-#  - Does NOT email (the daily 7am workflow does that)
+#  - If a NEW important-kind event was ingested, pushes a Telegram message
+#  - Does NOT email (the daily workflows do that)
 #  - Does NOT update +1/+7/+30 outcomes (the daily workflow does that)
 #
 # 12:00 - 22:00 UTC covers 7am - 5pm ET (EDT) and 8am - 6pm ET (EST), so we
 # don't need to adjust twice a year for daylight savings.
 on:
   schedule:
-    - cron: "*/30 12-22 * * 1-5"
+    - cron: "*/30 12-22 * * *"
   workflow_dispatch: {}
 
 permissions:
