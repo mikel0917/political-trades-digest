@@ -1,252 +1,424 @@
 """
 Digest builder — turns events + convergences + backtest into an email.
 
-Layout (designed as a scannable coffee read):
-  1. ⚡ CONVERGENCE — tickers hit by 2+ actors/kinds. The thing to actually look at.
-  2. ⭐ WATCHLIST — new events on tickers you own/track.
-  3. 📋 EVERYTHING ELSE — other tracked events (only if SHOW_FIREHOSE).
-  4. 📊 YOUR BACKTEST — running tally of how past signals actually performed.
-  5. ⚠️ the standing reminder that this is awareness, not alpha.
+Layout (designed as one clean scannable read, no section duplication):
 
-Every line carries a WHY tag (kind) and, where possible, a price snapshot with
-a "vs event price" so you can see whether you've ALREADY missed the move.
+  1. TL;DR             — the long-form narrative (from core.briefing)
+  2. TICKERS TODAY     — one compact card per ticker, sorted by signal
+                         strength. Replaces the previous CONVERGENCE /
+                         WATCHLIST / OTHER sections that all listed the
+                         same names. Every ticker appears once.
+  3. BACKTEST table    — aligned, with % signs and a header row
+  4. Standing reminder — lag + mean-reversion caveat
 """
 
 import datetime as dt
+import re
+import textwrap
 
 import config
-import re
 from core.store import KIND_LABELS
 from core import enrich, briefing
 
 
-# ---- plain text ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# helpers shared by text + html
+# ---------------------------------------------------------------------------
+
+def _pct_since_earliest(events, snap_cache):
+    """% change from the earliest event_price for these events to now."""
+    if not events:
+        return None
+    events = sorted(events, key=lambda e: e["event_date"])
+    for e in events:
+        ep = e.get("event_price")
+        snap = snap_cache.get(e.get("ticker"))
+        if ep and snap and snap.get("price"):
+            return (snap["price"] - ep) / ep * 100, e["event_date"]
+    return None
+
+
+def _ticker_order(convergences, new_events):
+    """
+    Return a list of (ticker, events_for_card, priority_class) tuples.
+
+    priority_class is one of: "convergence", "watchlist", "other".
+    Each ticker appears at most once. Sorted: convergences first (by
+    actor count then kind count), then watchlist names, then others.
+    """
+    seen = set()
+    rows = []
+
+    # convergences — use the full 45d event list from convergence detection
+    for t, info in sorted(
+        convergences.items(),
+        key=lambda kv: (len(kv[1]["actors"]), len(kv[1]["kinds"])),
+        reverse=True,
+    ):
+        rows.append((t, sorted(info["events"],
+                                key=lambda e: e["event_date"], reverse=True),
+                     "convergence", info))
+        seen.add(t)
+
+    # watchlist tickers that aren't already convergences — use new events
+    wl_by_ticker = {}
+    for e in new_events:
+        t = e.get("ticker")
+        if t and t in config.WATCHLIST and t not in seen:
+            wl_by_ticker.setdefault(t, []).append(e)
+    for t in sorted(wl_by_ticker.keys(),
+                    key=lambda t: max(e["event_date"] for e in wl_by_ticker[t]),
+                    reverse=True):
+        rows.append((t, sorted(wl_by_ticker[t],
+                                key=lambda e: e["event_date"], reverse=True),
+                     "watchlist", None))
+        seen.add(t)
+
+    # other tickers (firehose-only)
+    if config.SHOW_FIREHOSE:
+        other_by_ticker = {}
+        for e in new_events:
+            t = e.get("ticker")
+            if t and t not in seen:
+                other_by_ticker.setdefault(t, []).append(e)
+        for t in sorted(other_by_ticker.keys()):
+            rows.append((t, sorted(other_by_ticker[t],
+                                    key=lambda e: e["event_date"], reverse=True),
+                         "other", None))
+            seen.add(t)
+
+    return rows
+
+
+def _kind_short(kind):
+    """Compact kind label for table-style listing."""
+    return {
+        "endorsement":    "📣 ENDORSE",
+        "exec_trade":     "🏛️  EXEC",
+        "congress_trade": "🏦 CONGRESS",
+        "insider_buy":    "👔 INSIDER",
+        "setup":          "🔧 SETUP",
+        "news":           "📰 NEWS",
+    }.get(kind, kind.upper())
+
+
+# ---------------------------------------------------------------------------
+# plain text builder
+# ---------------------------------------------------------------------------
 
 def _wrap(text, width=72):
-    import textwrap
     return "\n".join(textwrap.wrap(text, width)) or text
-
-def _fmt_event_line(ev: dict, snap_cache: dict) -> str:
-    tag = KIND_LABELS.get(ev["kind"], ev["kind"])
-    ticker = ev.get("ticker") or "—"
-    line = f"{tag}  {ticker}  {ev['headline']}"
-    if ev.get("source_count", 1) > 1:
-        line += f"  ({ev['source_count']} sources)"
-    # price + did-i-miss-it
-    if ev.get("ticker"):
-        snap = snap_cache.get(ev["ticker"])
-        if snap:
-            line += f"\n        now {enrich.format_snapshot(snap)}"
-            ep = ev.get("event_price")
-            if ep and snap.get("price"):
-                chg = (snap["price"] - ep) / ep * 100
-                arrow = "▲" if chg >= 0 else "▼"
-                line += f"  |  {arrow}{abs(chg):.1f}% since event (${ep:.2f})"
-    if ev.get("detail"):
-        line += f"\n        {ev['detail']}"
-    if ev.get("url"):
-        line += f"\n        {ev['url']}"
-    return line
 
 
 def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
-    today = dt.date.today().strftime("%A, %B %d, %Y")
-    out = [f"POLITICAL & INSIDER TRADES DIGEST — {today}", "=" * 56, ""]
+    today_h = dt.date.today().strftime("%A, %B %d, %Y")
+    out = []
+    out.append(f"POLITICAL & INSIDER TRADES DIGEST — {today_h}")
+    out.append("=" * 64)
+    out.append("")
 
-    # 0. TLDR briefing
-    headline, paras = briefing.build(new_events, convergences, backtest, snap_cache, fresh_24h)
+    # --- TL;DR ---
+    headline, paras = briefing.build(new_events, convergences, backtest,
+                                     snap_cache, fresh_24h)
     out.append(f"TL;DR — {headline}")
-    out.append("-" * 56)
+    out.append("─" * 64)
     for p in paras:
-        # strip simple html tags for plaintext; turn <br> into newlines
         clean = re.sub(r"<br\s*/?>", "\n", p)
         clean = re.sub(r"</?(b|i|em|strong)>", "", clean)
-        # wrap each line of the (possibly multi-line) paragraph individually
-        wrapped_lines = []
         for line in clean.split("\n"):
-            wrapped_lines.append(_wrap(line, 72) if line.strip() else "")
-        out.append("\n".join(wrapped_lines))
+            out.append(_wrap(line, 72) if line.strip() else "")
         out.append("")
 
-    # 1. convergence
-    if convergences:
-        out.append("⚡ CONVERGENCE — multiple actors on the same name")
-        out.append("-" * 56)
-        for t, info in sorted(convergences.items(),
-                              key=lambda kv: len(kv[1]["actors"]), reverse=True):
-            actors = ", ".join(sorted(info["actors"])) or "multiple signals"
-            kinds = ", ".join(KIND_LABELS.get(k, k) for k in info["kinds"])
-            n_act = len(info["actors"])
-            out.append(f"\n  >>> {t} — {n_act} actor{'s' if n_act != 1 else ''}: {actors}")
-            out.append(f"      signal types: {kinds}")
-            snap = snap_cache.get(t)
-            if snap:
-                out.append(f"      {enrich.format_snapshot(snap)}")
-            for ev in sorted(info["events"], key=lambda e: e["event_date"], reverse=True)[:5]:
-                out.append(f"        · [{ev['event_date']}] {KIND_LABELS.get(ev['kind'], ev['kind'])} {ev['headline'][:70]}")
+    # --- TICKERS TODAY ---
+    rows = _ticker_order(convergences, new_events)
+    if rows:
+        out.append("")
+        out.append("─" * 64)
+        out.append(f"TICKERS TODAY  ({len(rows)} name{'s' if len(rows)!=1 else ''}, "
+                   f"sorted by signal strength)")
+        out.append("─" * 64)
+        out.append("")
+        for t, events, klass, conv_info in rows:
+            out.append(_ticker_card_text(t, events, klass, conv_info, snap_cache))
+            out.append("")
+    elif not convergences:
+        out.append("Nothing new on watchlist or convergences today.")
         out.append("")
 
-    # 2. watchlist new events
-    wl_events = [e for e in new_events if e.get("ticker") in config.WATCHLIST]
-    if wl_events:
-        out.append("⭐ WATCHLIST — new events on your tickers")
-        out.append("-" * 56)
-        for ev in wl_events:
-            out.append(_fmt_event_line(ev, snap_cache))
-            out.append("")
-
-    # 3. everything else
-    other = [e for e in new_events if e.get("ticker") not in config.WATCHLIST]
-    if other and config.SHOW_FIREHOSE:
-        out.append("📋 OTHER TRACKED EVENTS")
-        out.append("-" * 56)
-        for ev in other:
-            out.append(_fmt_event_line(ev, snap_cache))
-            out.append("")
-
-    if not new_events and not convergences:
-        out.append("Nothing new today. Enjoy the coffee.\n")
-
-    # 4. backtest
+    # --- BACKTEST ---
     if backtest:
-        out.append("📊 YOUR BACKTEST — how past signals actually performed")
-        out.append("-" * 56)
-        out.append("  kind            horizon   n    avg%    win%")
+        out.append("─" * 64)
+        out.append("BACKTEST — how past signals have performed for you")
+        out.append("─" * 64)
+        out.append("")
+        out.append(f"  {'Signal':<16} {'Horizon':<9} {'n':>4}  {'Avg %':>8}  {'Win %':>6}")
+        out.append("  " + "─" * 50)
         for row in backtest:
+            avg = row["avg_pct"] or 0
+            sign = "+" if avg >= 0 else ""
             out.append(
-                f"  {row['kind'][:14]:<14}  +{row['horizon_days']:>3}d  "
-                f"{row['n']:>3}  {row['avg_pct'] or 0:>6.1f}  "
+                f"  {row['kind'][:16]:<16} "
+                f"+{row['horizon_days']:>2}d      "
+                f"{row['n']:>4}  "
+                f"{sign}{avg:>6.1f}%  "
                 f"{(row['win_rate'] or 0)*100:>5.0f}%"
             )
         out.append("")
 
-    # 5. standing reminder
-    out.append("-" * 56)
-    out.append("⚠️  Reminder: these signals are LAGGED and the move is usually")
-    out.append("    already in the price. Endorsement/post pops tend to mean-revert.")
-    out.append("    This digest is for awareness, not a buy list. Check the")
-    out.append("    'since event' number before chasing anything green.")
+    # --- standing reminder ---
+    out.append("─" * 64)
+    out.append("⚠️  These signals are LAGGED — the move is usually already in")
+    out.append("    the price by the time you read this. Endorsement/post pops")
+    out.append("    tend to mean-revert. Awareness, not alpha. Check the")
+    out.append("    'since' number before chasing anything green.")
 
     return "\n".join(out)
 
 
-# ---- html ----------------------------------------------------------------
+def _ticker_card_text(t, events, klass, conv_info, snap_cache):
+    """Render one ticker's card in plain text."""
+    name = config.WATCHLIST.get(t, "")
+    sector = config.TICKER_SECTOR.get(t, "")
+    snap = snap_cache.get(t)
+
+    # header line: BADGE TICKER  NAME ........... $PRICE  ±DAY%
+    badge = {
+        "convergence": "⚡",
+        "watchlist":   "⭐",
+        "other":       " •",
+    }[klass]
+    price_bit = ""
+    if snap and snap.get("price"):
+        price_bit = f"${snap['price']:.2f}"
+        if snap.get("day_pct") is not None:
+            arrow = "▲" if snap["day_pct"] >= 0 else "▼"
+            price_bit += f"  {arrow}{abs(snap['day_pct']):.1f}%"
+    left = f"{badge} {t:<5} {name}"
+    # right-align price bit at column 64
+    pad = max(2, 64 - len(left) - len(price_bit))
+    lines = [f"{left}{' ' * pad}{price_bit}"]
+
+    # tag line: sector · watchlist · convergence badge with details
+    tag_bits = []
+    if sector:
+        tag_bits.append(sector)
+    if t in config.WATCHLIST and klass != "convergence":
+        tag_bits.append("⭐ watchlist")
+    if klass == "convergence" and conv_info:
+        n_act = len(conv_info["actors"])
+        n_knd = len(conv_info["kinds"])
+        tag_bits.append(f"CONVERGENCE ({n_act} actor{'s' if n_act!=1 else ''}, "
+                        f"{n_knd} kind{'s' if n_knd!=1 else ''})")
+    if tag_bits:
+        lines.append("   " + " · ".join(tag_bits))
+
+    # events list — one per line
+    for e in events[:6]:
+        srcs = e.get("source_count", 1)
+        src_bit = f"  ({srcs} src)" if srcs > 1 else ""
+        headline = e["headline"][:55] + ("…" if len(e["headline"]) > 55 else "")
+        kind = _kind_short(e["kind"])
+        lines.append(f"   • {e['event_date']}  {kind:<14}  {headline}{src_bit}")
+
+    # price-since-earliest summary
+    chg = _pct_since_earliest(events, snap_cache)
+    if chg is not None:
+        pct, since = chg
+        arrow = "▲" if pct >= 0 else "▼"
+        if pct > 5:
+            tail = " — already ran; chasing here is the trap"
+        elif pct < -5:
+            tail = " — post-signal reversion may be doing its thing"
+        else:
+            tail = " — still within the noise window"
+        lines.append(f"   {arrow} {abs(pct):.1f}% since earliest signal "
+                     f"({since}){tail}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# HTML builder
+# ---------------------------------------------------------------------------
 
 def build_html(new_events, convergences, backtest, snap_cache, fresh_24h=None):
-    today = dt.date.today().strftime("%A, %B %d, %Y")
+    today_h = dt.date.today().strftime("%A, %B %d, %Y")
     css = """
     <style>
       body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-           color:#1a1a1a;line-height:1.45;max-width:640px;margin:0 auto;padding:8px;}
-      h1{font-size:18px;margin:0 0 4px;}
-      .date{color:#666;font-size:13px;margin-bottom:16px;}
-      .section{margin:20px 0 8px;font-size:13px;font-weight:700;
-               text-transform:uppercase;letter-spacing:.5px;color:#333;
-               border-bottom:2px solid #eee;padding-bottom:4px;}
-      .conv{background:#fff8e1;border:1px solid #ffe08a;border-radius:8px;
-            padding:10px 12px;margin:8px 0;}
-      .conv .tk{font-size:16px;font-weight:700;}
-      .ev{padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:14px;}
-      .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 6px;
-           border-radius:4px;background:#eef;color:#334;margin-right:6px;}
-      .tk{font-weight:700;}
-      .meta{color:#666;font-size:12px;margin-top:2px;}
-      .pos{color:#0a7d28;font-weight:600;} .neg{color:#c0392b;font-weight:600;}
-      .miss{color:#b8860b;font-weight:600;}
-      a{color:#2a6ebd;text-decoration:none;}
-      table{border-collapse:collapse;font-size:13px;width:100%;}
-      td,th{padding:4px 8px;text-align:left;border-bottom:1px solid #eee;}
-      .warn{background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;
-            padding:10px 12px;margin-top:20px;font-size:13px;color:#611;}
+           color:#1a1a1a;line-height:1.5;max-width:680px;margin:0 auto;padding:12px;}
+      h1{font-size:19px;margin:0 0 4px;}
+      .date{color:#666;font-size:13px;margin-bottom:18px;}
+      .section{margin:24px 0 10px;font-size:12px;font-weight:700;
+               text-transform:uppercase;letter-spacing:.7px;color:#444;
+               border-bottom:2px solid #e6e6e6;padding-bottom:5px;}
+      .section .sub{font-weight:400;color:#888;text-transform:none;letter-spacing:0;}
       .tldr{background:#f4f7fb;border:1px solid #d6e2f0;border-radius:8px;
-            padding:14px 16px;margin:8px 0 4px;}
-      .tldr h2{font-size:14px;margin:0 0 8px;color:#234;text-transform:uppercase;
+            padding:16px 18px;margin:10px 0 4px;}
+      .tldr h2{font-size:14px;margin:0 0 10px;color:#234;text-transform:uppercase;
                letter-spacing:.5px;}
-      .tldr p{margin:0 0 9px;font-size:14.5px;line-height:1.5;}
+      .tldr p{margin:0 0 10px;font-size:14.5px;line-height:1.55;}
       .tldr p:last-child{margin-bottom:0;}
+      .card{border:1px solid #e6e6e6;border-radius:8px;padding:12px 14px;
+            margin:10px 0;}
+      .card.conv{background:#fff8e1;border-color:#f0c97a;}
+      .card.wl{background:#fbfbf3;border-color:#e0d8a0;}
+      .card .hd{display:flex;justify-content:space-between;align-items:baseline;
+                gap:8px;}
+      .card .tk{font-size:17px;font-weight:700;}
+      .card .nm{color:#444;font-weight:500;}
+      .card .px{font-size:15px;font-weight:600;white-space:nowrap;}
+      .card .px.pos{color:#0a7d28;} .card .px.neg{color:#c0392b;}
+      .card .tags{margin:4px 0 8px;font-size:12px;color:#666;}
+      .card .badge{display:inline-block;font-size:10.5px;font-weight:700;
+                   padding:1.5px 7px;border-radius:4px;letter-spacing:.4px;
+                   text-transform:uppercase;}
+      .card .badge.conv{background:#ffe08a;color:#5a3d00;}
+      .card .badge.wl{background:#fff0b8;color:#5a4a00;}
+      .ev{font-size:13.5px;color:#333;padding:3px 0;border-top:1px solid #f0f0f0;}
+      .ev:first-of-type{border-top:none;padding-top:6px;}
+      .ev .when{color:#777;font-variant-numeric:tabular-nums;}
+      .ev .kind{display:inline-block;min-width:90px;font-weight:600;color:#445;}
+      .ev .src{color:#999;font-size:12px;}
+      .since{margin-top:8px;font-size:13px;}
+      .since.pos{color:#0a7d28;} .since.neg{color:#c0392b;}
+      .since.miss{color:#a25c00;font-weight:600;}
+      a{color:#2a6ebd;text-decoration:none;}
+      table.bt{border-collapse:collapse;font-size:13px;width:100%;
+               margin-top:8px;font-variant-numeric:tabular-nums;}
+      table.bt th{background:#f0f0f4;text-align:left;
+                  padding:6px 10px;border-bottom:2px solid #d0d0d8;
+                  font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;
+                  color:#445;}
+      table.bt td{padding:6px 10px;border-bottom:1px solid #eee;}
+      table.bt td.num{text-align:right;}
+      table.bt td.pos{color:#0a7d28;font-weight:600;}
+      table.bt td.neg{color:#c0392b;font-weight:600;}
+      .warn{background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;
+            padding:11px 14px;margin-top:22px;font-size:13px;color:#611;}
     </style>"""
 
-    def snap_html(t):
-        snap = snap_cache.get(t)
-        if not snap:
-            return ""
-        return f'<div class="meta">now {enrich.format_snapshot(snap)}</div>'
+    h = [css,
+         "<h1>📈 Political &amp; Insider Trades Digest</h1>",
+         f'<div class="date">{today_h}</div>']
 
-    def since_html(ev):
-        ep = ev.get("event_price"); snap = snap_cache.get(ev.get("ticker"))
-        if ep and snap and snap.get("price"):
-            chg = (snap["price"] - ep) / ep * 100
-            cls = "miss" if chg > 5 else ("pos" if chg >= 0 else "neg")
-            arrow = "▲" if chg >= 0 else "▼"
-            note = " (already ran)" if chg > 5 else ""
-            return f'<span class="{cls}">{arrow}{abs(chg):.1f}% since event{note}</span>'
-        return ""
-
-    h = [css, f"<h1>📈 Political &amp; Insider Trades Digest</h1>",
-         f'<div class="date">{today}</div>']
-
-    # TLDR briefing card
-    headline, paras = briefing.build(new_events, convergences, backtest, snap_cache, fresh_24h)
+    # --- TLDR ---
+    headline, paras = briefing.build(new_events, convergences, backtest,
+                                     snap_cache, fresh_24h)
     h.append('<div class="tldr">')
     h.append(f'<h2>TL;DR — {headline}</h2>')
     for p in paras:
         h.append(f'<p>{p}</p>')
     h.append('</div>')
 
-    if convergences:
-        h.append('<div class="section">⚡ Convergence — multiple actors, same name</div>')
-        for t, info in sorted(convergences.items(),
-                              key=lambda kv: len(kv[1]["actors"]), reverse=True):
-            actors = ", ".join(sorted(info["actors"])) or "multiple signal types"
-            kinds = " · ".join(KIND_LABELS.get(k, k) for k in info["kinds"])
-            h.append('<div class="conv">')
-            h.append(f'<div class="tk">{t} — {len(info["actors"])} actors</div>')
-            h.append(f'<div class="meta">{actors}<br>{kinds}</div>')
-            h.append(snap_html(t))
-            for ev in sorted(info["events"], key=lambda e: e["event_date"], reverse=True)[:5]:
-                h.append(f'<div class="meta">· [{ev["event_date"]}] '
-                         f'{KIND_LABELS.get(ev["kind"], ev["kind"])} {ev["headline"][:80]}</div>')
-            h.append('</div>')
+    # --- TICKERS TODAY ---
+    rows = _ticker_order(convergences, new_events)
+    if rows:
+        h.append(f'<div class="section">Tickers today '
+                 f'<span class="sub">— {len(rows)} name'
+                 f'{"s" if len(rows)!=1 else ""}, sorted by signal strength</span></div>')
+        for t, events, klass, conv_info in rows:
+            h.append(_ticker_card_html(t, events, klass, conv_info, snap_cache))
+    elif not convergences:
+        h.append('<p>Nothing new on watchlist or convergences today. ☕</p>')
 
-    wl = [e for e in new_events if e.get("ticker") in config.WATCHLIST]
-    if wl:
-        h.append('<div class="section">⭐ Watchlist</div>')
-        for ev in wl:
-            h.append(_ev_html(ev, snap_html, since_html))
-
-    other = [e for e in new_events if e.get("ticker") not in config.WATCHLIST]
-    if other and config.SHOW_FIREHOSE:
-        h.append('<div class="section">📋 Other tracked events</div>')
-        for ev in other:
-            h.append(_ev_html(ev, snap_html, since_html))
-
-    if not new_events and not convergences:
-        h.append("<p>Nothing new today. Enjoy the coffee. ☕</p>")
-
+    # --- BACKTEST ---
     if backtest:
-        h.append('<div class="section">📊 Your backtest</div>')
-        h.append("<table><tr><th>Kind</th><th>Horizon</th><th>n</th>"
-                 "<th>Avg %</th><th>Win %</th></tr>")
+        h.append('<div class="section">Backtest '
+                 '<span class="sub">— how past signals have performed for you</span></div>')
+        h.append('<table class="bt">')
+        h.append('<tr><th>Signal</th><th>Horizon</th>'
+                 '<th class="num">n</th><th class="num">Avg %</th>'
+                 '<th class="num">Win %</th></tr>')
         for row in backtest:
-            h.append(f"<tr><td>{row['kind']}</td><td>+{row['horizon_days']}d</td>"
-                     f"<td>{row['n']}</td><td>{row['avg_pct'] or 0:.1f}</td>"
-                     f"<td>{(row['win_rate'] or 0)*100:.0f}%</td></tr>")
-        h.append("</table>")
+            avg = row["avg_pct"] or 0
+            cls = "pos" if avg > 0.5 else ("neg" if avg < -0.5 else "")
+            sign = "+" if avg >= 0 else ""
+            h.append(
+                f'<tr><td>{row["kind"]}</td>'
+                f'<td>+{row["horizon_days"]}d</td>'
+                f'<td class="num">{row["n"]}</td>'
+                f'<td class="num {cls}">{sign}{avg:.1f}%</td>'
+                f'<td class="num">{(row["win_rate"] or 0)*100:.0f}%</td></tr>'
+            )
+        h.append('</table>')
 
-    h.append('<div class="warn">⚠️ <b>Reminder:</b> these signals are lagged and '
-             'the move is usually already in the price. Endorsement/post pops tend '
-             'to mean-revert. This is for awareness, not a buy list — check the '
-             '"since event" number before chasing anything green.</div>')
+    # --- standing reminder ---
+    h.append('<div class="warn">⚠️ <b>These signals are lagged.</b> The move is '
+             'usually already in the price by the time you read this. '
+             'Endorsement / post pops tend to mean-revert. Awareness, not '
+             'alpha — check the "since" number before chasing anything green.</div>')
+
     return "\n".join(h)
 
 
-def _ev_html(ev, snap_html, since_html):
-    tag = KIND_LABELS.get(ev["kind"], ev["kind"])
-    ticker = ev.get("ticker") or "—"
-    src = f' · {ev["source_count"]} sources' if ev.get("source_count", 1) > 1 else ""
-    detail = f'<br>{ev["detail"]}' if ev.get("detail") else ""
-    url = f' · <a href="{ev["url"]}">link</a>' if ev.get("url") else ""
-    return (f'<div class="ev"><span class="tag">{tag}</span>'
-            f'<span class="tk">{ticker}</span> {ev["headline"]}'
-            f'<div class="meta">{since_html(ev)}{src}{url}{detail}</div>'
-            f'{snap_html(ev.get("ticker")) if ev.get("ticker") else ""}</div>')
+def _ticker_card_html(t, events, klass, conv_info, snap_cache):
+    """Render one ticker's card in HTML."""
+    name = config.WATCHLIST.get(t, "")
+    sector = config.TICKER_SECTOR.get(t, "")
+    snap = snap_cache.get(t)
+
+    card_cls = {"convergence": "card conv", "watchlist": "card wl",
+                "other": "card"}[klass]
+
+    # header: ticker + name + price
+    px_html = ""
+    if snap and snap.get("price"):
+        day_pct = snap.get("day_pct")
+        px_cls = "" if day_pct is None else ("pos" if day_pct >= 0 else "neg")
+        px_html = f'<div class="px {px_cls}">${snap["price"]:.2f}'
+        if day_pct is not None:
+            arrow = "▲" if day_pct >= 0 else "▼"
+            px_html += f' {arrow}{abs(day_pct):.1f}%'
+        px_html += '</div>'
+
+    name_html = f' <span class="nm">{name}</span>' if name else ""
+    head = (f'<div class="hd"><div><span class="tk">{t}</span>{name_html}</div>'
+            f'{px_html}</div>')
+
+    # tag row: sector + badges
+    tag_bits = []
+    if sector:
+        tag_bits.append(sector)
+    if klass == "convergence" and conv_info:
+        n_act = len(conv_info["actors"])
+        n_knd = len(conv_info["kinds"])
+        tag_bits.append(f'<span class="badge conv">⚡ Convergence · '
+                        f'{n_act} actor{"s" if n_act!=1 else ""} · '
+                        f'{n_knd} kind{"s" if n_knd!=1 else ""}</span>')
+    elif klass == "watchlist":
+        tag_bits.append('<span class="badge wl">⭐ Watchlist</span>')
+    tags_html = ('<div class="tags">' + " &nbsp;·&nbsp; ".join(tag_bits) + '</div>'
+                 if tag_bits else "")
+
+    # events
+    ev_html = []
+    for e in events[:6]:
+        srcs = e.get("source_count", 1)
+        src_bit = f' <span class="src">· {srcs} src</span>' if srcs > 1 else ""
+        url = f' <a href="{e["url"]}">↗</a>' if e.get("url") else ""
+        kind = _kind_short(e["kind"])
+        head_text = e["headline"][:90] + ("…" if len(e["headline"]) > 90 else "")
+        ev_html.append(
+            f'<div class="ev"><span class="when">{e["event_date"]}</span> '
+            f'<span class="kind">{kind}</span> {head_text}{src_bit}{url}</div>'
+        )
+
+    # since-earliest summary
+    chg_block = ""
+    chg = _pct_since_earliest(events, snap_cache)
+    if chg is not None:
+        pct, since = chg
+        arrow = "▲" if pct >= 0 else "▼"
+        if pct > 5:
+            cls, tail = "miss", " — already ran; chasing here is the trap"
+        elif pct < -5:
+            cls, tail = "neg", " — post-signal reversion may be doing its thing"
+        elif pct >= 0:
+            cls, tail = "pos", " — still in the noise window"
+        else:
+            cls, tail = "neg", " — drifting against the signal"
+        chg_block = (f'<div class="since {cls}">{arrow} {abs(pct):.1f}% since '
+                     f'earliest signal ({since}){tail}</div>')
+
+    return f'<div class="{card_cls}">{head}{tags_html}{"".join(ev_html)}{chg_block}</div>'
