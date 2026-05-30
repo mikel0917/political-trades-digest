@@ -1,0 +1,74 @@
+name: Daily Trades Digest
+
+# Runs every morning. GitHub cron is in UTC.
+# 11:00 UTC = 7:00 AM US Eastern (EDT). Adjust if you want a different time.
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+# Needs write permission so it can commit digest.db back to the repo,
+# preserving dedup history + backtest outcomes between runs.
+permissions:
+  contents: write
+
+# Prevent a scheduled run from colliding with a manual run on the same branch
+# (both push digest.db; the second push would fail).
+concurrency:
+  group: digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run digest
+        env:
+          # These come from repo Settings -> Secrets and variables -> Actions.
+          # Any left unset just disables that feature (tool still runs).
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          DIGEST_EMAIL_FROM: ${{ secrets.DIGEST_EMAIL_FROM }}
+          DIGEST_EMAIL_TO: ${{ secrets.DIGEST_EMAIL_TO }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY }}
+          TELNYX_FROM_NUMBER: ${{ secrets.TELNYX_FROM_NUMBER }}
+          TELNYX_TO_NUMBER: ${{ secrets.TELNYX_TO_NUMBER }}
+          EDGAR_UA: ${{ secrets.EDGAR_UA }}
+        run: python run.py
+
+      - name: Upload digest as artifact (debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ github.run_id }}
+          path: output/
+          retention-days: 30
+
+      - name: Persist database (dedup history + backtest)
+        run: |
+          git config user.name  "digest-bot"
+          git config user.email "digest-bot@users.noreply.github.com"
+          git add -f digest.db
+          # Only commit if the DB actually changed, to avoid empty commits.
+          if git diff --staged --quiet; then
+            echo "no DB changes to commit"
+            exit 0
+          fi
+          git commit -m "digest run $(date -u +%F)"
+          # Rebase any commits made since checkout (rare, but possible if a
+          # manual + scheduled run race past the concurrency gate).
+          git pull --rebase origin main || true
+          git push

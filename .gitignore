@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Secrets — never commit
+.env
+
+# Generated digests (regenerated each run; no need to version)
+output/*.html
+output/*.txt
+
+# Keep digest.db tracked (GitHub Actions commits it back for persistence).
+# Do NOT ignore it.
