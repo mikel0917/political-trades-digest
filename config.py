@@ -38,6 +38,50 @@ WATCHLIST = {
 # convergence hits are shown (quieter coffee read). Start with False.
 SHOW_FIREHOSE = False
 
+# Sector tags used by the briefing for context paragraphs (e.g. "this is the
+# third semis name to surface this week"). Add tickers here as you extend
+# WATCHLIST. Unknown tickers just don't get a sector callout.
+TICKER_SECTOR = {
+    "RKLB": "space/defense",
+    "MU":   "semis",
+    "DXYZ": "private-tech basket",
+    "PLTR": "defense-software",
+    "ADBE": "software",
+    "INTC": "semis",
+    "DELL": "hardware/AI infra",
+    "AVGO": "semis",
+    "SNPS": "semis-EDA",
+    "CDNS": "semis-EDA",
+    "TXN":  "semis",
+    "NVDA": "semis",
+    "HOOD": "fintech/brokerage",
+    # common extras the resolver might surface
+    "AAPL": "consumer-tech",
+    "TSLA": "auto/energy",
+    "BA":   "aerospace/defense",
+    "LMT":  "defense",
+    "AMZN": "consumer-tech",
+    "MSFT": "software",
+    "DJT":  "media",
+    "COIN": "crypto/fintech",
+    "AMD":  "semis",
+}
+
+# Short qualitative notes per actor — used by the briefing to add a sentence
+# of context (their committee, role, or known position). Keep it factual and
+# brief; the digest is not a profile page.
+ACTOR_NOTES = {
+    "trump":      "sitting president; his disclosed trades and verbal endorsements both move tape, but research shows the move is captured by algos within seconds",
+    "bessent":    "Treasury Secretary; cabinet officials typically divest individual stocks on taking office, so direct trades are rare — watch for policy signals instead",
+    "pelosi":     "House member; her family's trading record is the most-studied in the STOCK Act dataset and outperforms the index, but the disclosures arrive ~45 days late",
+    "tuberville": "Senate Armed Services; activity tends to cluster around defense names",
+    "crenshaw":   "House Energy & Commerce; trades tend to be small-dollar relative to other tracked names",
+    "khanna":     "House Oversight; one of the louder voices for a congressional trading ban while still actively filing",
+    "greene":     "House Oversight; high-volume filer with a broad-spectrum portfolio",
+    "mccaul":     "House Foreign Affairs; defense and aerospace overweight",
+    "gottheimer": "House Financial Services; finance/insurance overweight",
+}
+
 # ---------------------------------------------------------------------------
 # CONVERGENCE DETECTION
 # ---------------------------------------------------------------------------
