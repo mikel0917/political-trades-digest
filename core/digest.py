@@ -58,9 +58,14 @@ def build_text(new_events, convergences, backtest, snap_cache):
     out.append(f"TL;DR — {headline}")
     out.append("-" * 56)
     for p in paras:
-        # strip html bold for plaintext
-        clean = re.sub(r"</?b>", "", p)
-        out.append(_wrap(clean, 72))
+        # strip simple html tags for plaintext; turn <br> into newlines
+        clean = re.sub(r"<br\s*/?>", "\n", p)
+        clean = re.sub(r"</?(b|i|em|strong)>", "", clean)
+        # wrap each line of the (possibly multi-line) paragraph individually
+        wrapped_lines = []
+        for line in clean.split("\n"):
+            wrapped_lines.append(_wrap(line, 72) if line.strip() else "")
+        out.append("\n".join(wrapped_lines))
         out.append("")
 
     # 1. convergence

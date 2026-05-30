@@ -13,15 +13,24 @@ and tunable by editing this file or config.py.
 
 Structure each run produces:
   1. Headline line  — one-liner summarizing the day
-  2. Opening orientation paragraph
-  3. Per-convergence deep-dive (one paragraph each, in priority order)
-  4. Watchlist-but-not-convergence paragraph
-  5. Setup-signals paragraph (contracts, government stakes, donations)
-  6. Sector cluster observation (if 2+ events land in the same sector)
-  7. Firehose mention (if SHOW_FIREHOSE is on)
-  8. Backtest interpretation paragraph
-  9. Quiet-day variant (if zero events) — gets its own 100-word body
+  2. FRESH-24H section — anything dated today or yesterday, surfaced FIRST.
+     This is the part the user reads to decide whether to keep scrolling.
+     If empty, that's stated explicitly (the rolling-window stuff below is
+     by definition lagged).
+  3. Opening orientation paragraph (rolling-window framing)
+  4. Per-convergence deep-dive (one paragraph each, in priority order)
+  5. Watchlist-but-not-convergence paragraph
+  6. Setup-signals paragraph (contracts, government stakes, donations)
+  7. Sector cluster observation (if 2+ events land in the same sector)
+  8. Firehose mention (if SHOW_FIREHOSE is on)
+  9. Backtest interpretation paragraph
+ 10. Quiet-day variant (if zero events) — gets its own 100-word body
 """
+
+# How many days back "fresh" means. 1 = strictly today + yesterday, which
+# matches the daily cron cadence so nothing slips through the cracks if a
+# run goes long or starts a few minutes late.
+FRESH_DAYS = 1
 
 import datetime as dt
 from collections import Counter
@@ -84,8 +93,9 @@ def build(new_events, convergences, backtest, snap_cache):
     n_conv = len(convergences)
     wl_hits = sorted({e["ticker"] for e in new_events
                       if e.get("ticker") in config.WATCHLIST})
+    fresh = _fresh_events(new_events, today)
 
-    headline = _headline(n_events, n_conv, wl_hits)
+    headline = _headline(n_events, n_conv, wl_hits, len(fresh))
 
     # --- quiet-day path ---
     if not n_events and not n_conv:
@@ -93,7 +103,12 @@ def build(new_events, convergences, backtest, snap_cache):
 
     paras = []
 
-    # --- (1) orientation opener ---
+    # --- (0) FRESH-24H section — first thing the reader sees ---
+    # Always renders, even when empty, so the user can trust that "no fresh
+    # block" really means nothing happened in the last day (vs. tool broken).
+    paras.append(_fresh_paragraph(fresh, snap_cache, today))
+
+    # --- (1) orientation opener — rolling-window framing ---
     paras.append(_orientation(today, n_events, n_conv, wl_hits, new_events))
 
     # --- (2) per-convergence deep dives ---
@@ -138,21 +153,92 @@ def build(new_events, convergences, backtest, snap_cache):
 
 
 # ---------------------------------------------------------------------------
+# fresh (last 24h) — pinned to the top of the TLDR
+# ---------------------------------------------------------------------------
+
+def _fresh_events(new_events, today):
+    """Events whose event_date is today or within FRESH_DAYS prior."""
+    cutoff = today - dt.timedelta(days=FRESH_DAYS)
+    out = []
+    for e in new_events:
+        try:
+            d = dt.date.fromisoformat(e["event_date"])
+        except Exception:
+            continue
+        if d >= cutoff:
+            out.append((d, e))
+    # newest first
+    out.sort(key=lambda x: x[0], reverse=True)
+    return [e for _, e in out]
+
+
+def _fresh_paragraph(fresh, snap_cache, today):
+    """
+    First paragraph of every TLDR. Surfaces only events dated today or
+    yesterday (FRESH_DAYS). If empty, says so explicitly — the rest of the
+    digest is by definition rolling-window / lagged data.
+    """
+    if not fresh:
+        return ("<b>FRESH (last 24h):</b> nothing new dated today or yesterday. "
+                "Everything below is rolling-window context — convergences and "
+                "filings that surfaced in the last 45 days but didn't move "
+                "since the previous digest. That's normal; most calendar days "
+                "produce no fresh tracked event.")
+
+    bits = []
+    for e in fresh[:8]:
+        t = e.get("ticker") or "—"
+        kind = _humanize_kind(e["kind"])
+        who = e.get("actor") or ""
+        if who in ("News", "Insider", "Congress", ""):
+            who = ""
+        # price + since-event
+        snap = snap_cache.get(e.get("ticker")) if e.get("ticker") else None
+        price_bit = ""
+        if snap and snap.get("price"):
+            price_bit = f" — now ~${snap['price']:.2f}"
+            mv = _pct_since(e, snap_cache)
+            if mv is not None:
+                if mv > 5:
+                    price_bit += f", already +{mv:.0f}% since (caution: likely in price)"
+                elif mv >= 0:
+                    price_bit += f", +{mv:.0f}% since"
+                else:
+                    price_bit += f", {mv:.0f}% since"
+        watchlist_tag = " ⭐" if e.get("ticker") in config.WATCHLIST else ""
+        actor_bit = f" by {who.capitalize()}" if who else ""
+        # short headline excerpt
+        excerpt = e["headline"][:90] + ("…" if len(e["headline"]) > 90 else "")
+        bits.append(f"<b>{t}</b>{watchlist_tag} — {kind}{actor_bit} on "
+                    f"{e['event_date']}{price_bit}. <i>{excerpt}</i>")
+
+    body = "<br>• ".join(bits)
+    n = len(fresh)
+    n_str = f"{n} item{'s' if n != 1 else ''}"
+    return (f"<b>FRESH (last 24h):</b> {n_str} dated today or yesterday — "
+            f"this is what's actually new since the last digest, before any "
+            f"rolling-window noise:<br>• {body}")
+
+
+# ---------------------------------------------------------------------------
 # headline + opener
 # ---------------------------------------------------------------------------
 
-def _headline(n_events, n_conv, wl_hits):
+def _headline(n_events, n_conv, wl_hits, n_fresh):
+    # Lead with freshness when there is any — that's what the reader cares about.
+    parts = []
+    if n_fresh:
+        parts.append(f"{n_fresh} fresh today")
     if n_conv:
-        bits = [f"{n_conv} convergence {'signal' if n_conv == 1 else 'signals'} today"]
-        if wl_hits:
-            bits.append(f"{len(wl_hits)} on your watchlist")
-        return " · ".join(bits)
-    if wl_hits:
-        return (f"{len(wl_hits)} watchlist name"
-                f"{'s' if len(wl_hits) != 1 else ''} moved today")
-    if n_events:
-        return f"{n_events} tracked event{'s' if n_events != 1 else ''} — nothing on your watchlist"
-    return "Quiet day — nothing new"
+        parts.append(f"{n_conv} convergence{'s' if n_conv != 1 else ''} in 45d window")
+    if wl_hits and not parts:
+        parts.append(f"{len(wl_hits)} watchlist name"
+                     f"{'s' if len(wl_hits) != 1 else ''} active")
+    if not parts and n_events:
+        parts.append(f"{n_events} tracked, nothing on watchlist")
+    if not parts:
+        return "Quiet day — nothing new"
+    return " · ".join(parts)
 
 
 def _orientation(today, n_events, n_conv, wl_hits, new_events):
@@ -463,6 +549,7 @@ def _backtest_paragraph(backtest):
 
 def _quiet_day_paragraphs(backtest):
     paras = []
+    paras.append("<b>FRESH (last 24h):</b> nothing new dated today or yesterday.")
     paras.append("Nothing new tracked since the last run. That's the literal "
                  "majority of days for this dataset — most calendar days don't "
                  "produce a Trump endorsement, a tracked congressional filing, "
