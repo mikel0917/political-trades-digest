@@ -90,10 +90,13 @@ def main():
     # 6. build digest from unnotified events
     new_events = store.unnotified_events()
 
-    # price snapshot cache (one lookup per ticker)
+    # price snapshot cache (one lookup per ticker). We pre-cache the FULL
+    # watchlist so the digest's QUIET WATCHLIST section can show current
+    # price for every tracked name, even ones with no signal events today.
     snap_cache = {}
     tickers_needed = {e["ticker"] for e in new_events if e.get("ticker")}
     tickers_needed |= set(convergences.keys())
+    tickers_needed |= set(config.WATCHLIST.keys())
     for t in tickers_needed:
         snap_cache[t] = enrich.snapshot(t)
 

@@ -162,6 +162,35 @@ def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
         out.append("Nothing new on watchlist or convergences today.")
         out.append("")
 
+    # --- QUIET WATCHLIST (watchlist names with no fresh activity) ---
+    active_tickers = {t for t, _, _, _ in rows}
+    quiet = [t for t in config.WATCHLIST if t not in active_tickers]
+    if quiet:
+        out.append("─" * 64)
+        out.append(f"QUIET WATCHLIST  ({len(quiet)} name"
+                   f"{'s' if len(quiet) != 1 else ''} — no fresh events today, "
+                   f"current price for reference)")
+        out.append("─" * 64)
+        out.append("")
+        for t in quiet:
+            name = config.WATCHLIST.get(t, "")
+            sector = config.TICKER_SECTOR.get(t, "")
+            snap = snap_cache.get(t)
+            if snap and snap.get("price"):
+                px = f"${snap['price']:.2f}"
+                day = ""
+                if snap.get("day_pct") is not None:
+                    arrow = "▲" if snap["day_pct"] >= 0 else "▼"
+                    day = f"  {arrow}{abs(snap['day_pct']):.1f}%"
+                px_str = f"{px}{day}"
+            else:
+                px_str = "price unavailable"
+            sect = f" ({sector})" if sector else ""
+            line = f"  {t:<5} {name}{sect}"
+            pad = max(2, 56 - len(line))
+            out.append(f"{line}{' ' * pad}{px_str}")
+        out.append("")
+
     # --- BACKTEST ---
     if backtest:
         out.append("─" * 64)
@@ -337,6 +366,38 @@ def build_html(new_events, convergences, backtest, snap_cache, fresh_24h=None):
             h.append(_ticker_card_html(t, events, klass, conv_info, snap_cache))
     elif not convergences:
         h.append('<p>Nothing new on watchlist or convergences today. ☕</p>')
+
+    # --- QUIET WATCHLIST ---
+    active_tickers = {t for t, _, _, _ in rows}
+    quiet = [t for t in config.WATCHLIST if t not in active_tickers]
+    if quiet:
+        h.append(f'<div class="section">Quiet watchlist '
+                 f'<span class="sub">— {len(quiet)} name'
+                 f'{"s" if len(quiet) != 1 else ""}, no fresh events, '
+                 f'current price for reference</span></div>')
+        h.append('<table class="bt">')
+        h.append('<tr><th>Ticker</th><th>Name</th><th>Sector</th>'
+                 '<th class="num">Price</th><th class="num">Day</th></tr>')
+        for t in quiet:
+            name = config.WATCHLIST.get(t, "")
+            sector = config.TICKER_SECTOR.get(t, "")
+            snap = snap_cache.get(t)
+            if snap and snap.get("price"):
+                price_str = f"${snap['price']:.2f}"
+                day_pct = snap.get("day_pct")
+                if day_pct is not None:
+                    arrow = "▲" if day_pct >= 0 else "▼"
+                    cls = "pos" if day_pct >= 0 else "neg"
+                    day_str = f'<span class="{cls}">{arrow}{abs(day_pct):.1f}%</span>'
+                else:
+                    day_str = "—"
+            else:
+                price_str = "—"
+                day_str = "—"
+            h.append(f'<tr><td><b>{t}</b></td><td>{name}</td>'
+                     f'<td>{sector}</td><td class="num">{price_str}</td>'
+                     f'<td class="num">{day_str}</td></tr>')
+        h.append('</table>')
 
     # --- BACKTEST ---
     if backtest:
