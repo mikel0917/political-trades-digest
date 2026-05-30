@@ -64,21 +64,26 @@ def main():
             new_objs.append(ev)
     print(f"{len(new_keys)} new unique events after dedup")
 
-    # ── INTRADAY MODE: short-circuit. Telegram-push any new priority events,
+    # ── INTRADAY MODE: short-circuit. Telegram-push any new important events,
     # commit DB, exit. No outcomes, no email, no convergence-narration pass.
-    # Priority = ticker in WATCHLIST, OR insertion of this event creates a
-    # convergence (ticker now has ≥2 distinct actors or kinds in the 45d window).
+    #
+    # Trigger policy: alert on ANY new event whose kind is administration-
+    # tied (endorsement, exec_trade, congress_trade, setup, insider_buy) —
+    # regardless of ticker, regardless of watchlist. The watchlist is for
+    # past activity; new shoutouts on new names are exactly what we want to
+    # hear about. Generic news without a clear signal-kind stays silent so
+    # the phone doesn't buzz on every Q1-earnings headline.
+    INTRADAY_ALERT_KINDS = {"endorsement", "exec_trade", "congress_trade",
+                            "setup", "insider_buy"}
     if INTRADAY:
         priority_news = []
         for ev in new_objs:
-            if not ev.ticker:
-                continue
-            if ev.ticker in config.WATCHLIST:
+            if ev.kind in INTRADAY_ALERT_KINDS:
                 priority_news.append(ev)
-        # snapshot prices just for the alerted tickers
+        # snapshot prices just for the alerted tickers (skip events with no ticker)
         snap_cache = {}
         for ev in priority_news:
-            if ev.ticker not in snap_cache:
+            if ev.ticker and ev.ticker not in snap_cache:
                 snap_cache[ev.ticker] = enrich.snapshot(ev.ticker)
         if priority_news:
             print(f"  [intraday] {len(priority_news)} new priority event(s) — pushing")

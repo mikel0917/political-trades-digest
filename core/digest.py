@@ -92,10 +92,28 @@ def _ticker_order(convergences, new_events, fresh_24h=None):
                      "watchlist", None))
         seen.add(t)
 
-    # other tickers (firehose only)
+    # off-watchlist tickers that nonetheless carry a politically-tagged
+    # signal (endorsement / exec_trade / congress_trade / setup) get their
+    # own card — even without firehose. The reason: the watchlist is
+    # "things we've already seen"; a brand-new admin shoutout on a name
+    # that's not on the list is exactly what the user wants surfaced.
+    IMPORTANT_KINDS = {"endorsement", "exec_trade", "congress_trade", "setup"}
+    other_tickers = [t for t in by_ticker if t not in seen]
+    promoted = [t for t in other_tickers
+                if any(e["kind"] in IMPORTANT_KINDS for e in by_ticker[t])]
+    for t in sorted(promoted,
+                    key=lambda t: max(e["event_date"] for e in by_ticker[t]),
+                    reverse=True):
+        rows.append((t,
+                     sorted(by_ticker[t],
+                            key=lambda e: e["event_date"], reverse=True),
+                     "other", None))
+        seen.add(t)
+
+    # remaining tickers (firehose only — generic news on unrelated names)
     if config.SHOW_FIREHOSE:
-        other_tickers = [t for t in by_ticker if t not in seen]
-        for t in sorted(other_tickers,
+        remaining = [t for t in by_ticker if t not in seen]
+        for t in sorted(remaining,
                         key=lambda t: max(e["event_date"] for e in by_ticker[t]),
                         reverse=True):
             rows.append((t,
@@ -160,6 +178,28 @@ def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
             out.append("")
     elif not convergences:
         out.append("Nothing new on watchlist or convergences today.")
+        out.append("")
+
+    # --- Unmatched important events (no ticker resolved) ---
+    # These fired the intraday alert by virtue of their kind being important
+    # (endorsement / exec_trade / setup) but the ticker resolver couldn't pin
+    # them to a symbol. Surface them so the user can investigate.
+    IMPORTANT_KINDS = {"endorsement", "exec_trade", "congress_trade", "setup"}
+    unmatched = [e for e in (new_events or [])
+                 if not e.get("ticker") and e.get("kind") in IMPORTANT_KINDS]
+    if unmatched:
+        out.append("─" * 64)
+        out.append(f"UNMATCHED IMPORTANT EVENTS  ({len(unmatched)} — ticker "
+                   f"couldn't be auto-resolved; manual lookup recommended)")
+        out.append("─" * 64)
+        out.append("")
+        for e in unmatched[:10]:
+            kind = _kind_short(e["kind"])
+            actor_bit = f"  by {e['actor']}" if e.get("actor") and e["actor"] not in ("News",) else ""
+            out.append(f"  • {e['event_date']}  {kind:<14}{actor_bit}")
+            out.append(f"      {e['headline'][:90]}")
+            if e.get("url"):
+                out.append(f"      {e['url']}")
         out.append("")
 
     # --- QUIET WATCHLIST (watchlist names with no fresh activity) ---
@@ -366,6 +406,22 @@ def build_html(new_events, convergences, backtest, snap_cache, fresh_24h=None):
             h.append(_ticker_card_html(t, events, klass, conv_info, snap_cache))
     elif not convergences:
         h.append('<p>Nothing new on watchlist or convergences today. ☕</p>')
+
+    # --- Unmatched important events ---
+    IMPORTANT_KINDS = {"endorsement", "exec_trade", "congress_trade", "setup"}
+    unmatched = [e for e in (new_events or [])
+                 if not e.get("ticker") and e.get("kind") in IMPORTANT_KINDS]
+    if unmatched:
+        h.append('<div class="section">Unmatched important events '
+                 '<span class="sub">— ticker couldn\'t be auto-resolved; manual lookup recommended</span></div>')
+        for e in unmatched[:10]:
+            kind = _kind_short(e["kind"])
+            actor_bit = f' <span class="src">by {e["actor"]}</span>' if e.get("actor") and e["actor"] != "News" else ""
+            url = f' <a href="{e["url"]}">↗</a>' if e.get("url") else ""
+            h.append(f'<div class="card"><div class="ev">'
+                     f'<span class="when">{e["event_date"]}</span> '
+                     f'<span class="kind">{kind}</span>{actor_bit} — '
+                     f'{e["headline"][:120]}{url}</div></div>')
 
     # --- QUIET WATCHLIST ---
     active_tickers = {t for t, _, _, _ in rows}

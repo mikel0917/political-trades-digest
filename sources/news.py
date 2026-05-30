@@ -109,8 +109,14 @@ def fetch() -> list[Event]:
             ticker = tickers.resolve(f"{title} {summary}")
             kind, is_setup = _classify(title, summary)
 
-            # Drop unmatched generic news unless firehose mode is on.
-            if ticker is None and not config.SHOW_FIREHOSE:
+            # Drop policy: keep the event if it's a politically-tagged signal
+            # (endorsement / exec trade / setup) even when the resolver can't
+            # find a ticker, because the WHO + WHAT still matters and the
+            # intraday push uses signal-kind, not ticker, as the trigger.
+            # Generic news without a ticker stays dropped unless SHOW_FIREHOSE
+            # is on — otherwise the digest would flood with unrelated stories.
+            important_kinds = {KIND_ENDORSEMENT, KIND_EXEC_TRADE, KIND_SETUP}
+            if ticker is None and kind not in important_kinds and not config.SHOW_FIREHOSE:
                 continue
 
             events.append(Event(
