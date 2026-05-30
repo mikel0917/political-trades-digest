@@ -34,32 +34,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Debug secret integrity (temporary)
-        env:
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          EDGAR_UA: ${{ secrets.EDGAR_UA }}
-        run: |
-          python - <<'PY'
-          import os, hashlib
-          for k in ("RESEND_API_KEY", "EDGAR_UA"):
-              v = os.environ.get(k, "")
-              h = hashlib.sha256(v.encode()).hexdigest()[:12]
-              # Reveals length + any leading/trailing whitespace without leaking value.
-              print(f"{k}: len={len(v)} sha256_12={h} startswith_re={v[:3]!r} endswith={v[-3:]!r} has_newline={chr(10) in v} has_cr={chr(13) in v}")
-          # Also: live curl to Resend from the runner using the same env var.
-          import urllib.request, json
-          req = urllib.request.Request(
-              "https://api.resend.com/emails",
-              data=json.dumps({"from":"onboarding@resend.dev","to":["doughnut23456@gmail.com"],"subject":"debug","text":"hi"}).encode(),
-              headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}", "Content-Type":"application/json"},
-              method="POST")
-          try:
-              resp = urllib.request.urlopen(req, timeout=15)
-              print("resend_curl_status:", resp.status, resp.read()[:200])
-          except urllib.error.HTTPError as e:
-              print("resend_curl_status:", e.code, e.read()[:300])
-          PY
-
       - name: Run digest
         env:
           # These come from repo Settings -> Secrets and variables -> Actions.
