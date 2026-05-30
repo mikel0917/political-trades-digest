@@ -2,14 +2,14 @@ name: Daily Trades Digest
 
 # Two scheduled runs per day:
 #   - 12:00 UTC = 8:00 AM ET (EDT) / 7:00 AM ET (EST)  → pre-market summary
-#   - 21:00 UTC = 5:00 PM ET (EDT) / 4:00 PM ET (EST)  → after-close summary
+#   - 22:00 UTC = 6:00 PM ET (EDT) / 5:00 PM ET (EST)  → after-close summary
 # GH cron doesn't know about DST; times shift ~1h in winter. Acceptable for
-# a "before open / after close" digest — the close window is still inside
-# the trading day in EST and the open one still before bell.
+# a "before open / after close" digest — the close window is still right
+# after-bell in either season.
 on:
   schedule:
     - cron: "0 12 * * *"   # 8am ET EDT (pre-market)
-    - cron: "0 21 * * *"   # 5pm ET EDT (after-close)
+    - cron: "0 22 * * *"   # 6pm ET EDT (after-close)
   workflow_dispatch: {}    # lets you trigger a run manually from the Actions tab
 
 # Needs write permission so it can commit digest.db back to the repo,
