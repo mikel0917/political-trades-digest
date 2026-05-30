@@ -76,7 +76,8 @@ def build_text(new_events, convergences, backtest, snap_cache, fresh_24h=None):
                               key=lambda kv: len(kv[1]["actors"]), reverse=True):
             actors = ", ".join(sorted(info["actors"])) or "multiple signals"
             kinds = ", ".join(KIND_LABELS.get(k, k) for k in info["kinds"])
-            out.append(f"\n  >>> {t} — {len(info['actors'])} actors: {actors}")
+            n_act = len(info["actors"])
+            out.append(f"\n  >>> {t} — {n_act} actor{'s' if n_act != 1 else ''}: {actors}")
             out.append(f"      signal types: {kinds}")
             snap = snap_cache.get(t)
             if snap:

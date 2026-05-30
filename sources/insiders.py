@@ -63,15 +63,23 @@ def fetch() -> list[Event]:
             except Exception:
                 pass
 
-            # The atom title for Form 4 is typically "4 - Insider Name (CIK)".
-            # We can't tell buy vs sell from the feed alone without fetching the
-            # filing; we surface the filing and tag it for you to glance at.
-            # (A deeper parse of the XML form is a v2 enhancement.)
+            # EDGAR atom titles vary: sometimes "4 - Person Name (CIK)" with the
+            # filer's actual name, sometimes the generic form description
+            # "4 - Statement of changes in beneficial ownership of securities".
+            # The generic case has no real actor — call it "Insider" rather
+            # than letting the form-description string become the actor key.
+            raw = title.replace("4 - ", "").split("(")[0].strip()
+            generic = ("statement of changes" in raw.lower()
+                       or "beneficial ownership" in raw.lower()
+                       or not raw)
+            actor = "Insider" if generic else raw
+            headline = (f"Form 4 filed for {ticker}"
+                        + (f" by {actor}" if not generic else ""))
             events.append(Event(
                 kind=KIND_INSIDER,
-                actor=title.replace("4 - ", "").split("(")[0].strip() or "Insider",
+                actor=actor,
                 ticker=ticker,
-                headline=f"Form 4 filed for {ticker}: {title.replace('4 - ', '')}",
+                headline=headline,
                 source="SEC EDGAR",
                 url=entry.get("link", ""),
                 event_date=edate,

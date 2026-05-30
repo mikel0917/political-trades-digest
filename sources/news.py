@@ -67,7 +67,18 @@ def _entry_date(entry) -> str:
 
 
 def _actor_from_text(text: str) -> str:
+    """
+    Attribute a news item to a known actor. Checks congressional names
+    first (more specific — full names like 'Nancy Pelosi'), then executive
+    actors (typically single tokens like 'Trump' which would otherwise
+    catch unrelated mentions). Returns 'News' if nothing matches.
+    """
     low = text.lower()
+    for a in config.CONGRESS_ACTORS:
+        # match on last-name token to handle 'Pelosi' alone or 'Nancy Pelosi'
+        last = a.lower().split()[-1]
+        if last and last in low:
+            return a
     for a in config.EXECUTIVE_ACTORS:
         if a.lower() in low:
             return a

@@ -322,9 +322,20 @@ def _convergence_paragraph(t, info, snap_cache):
     where = ", ".join(where_bits)
     where = f", {where}" if where else ""
     actor_str = _humanize_actors(actors) if actors else "multiple independent signals"
+    # Pick the right verb-phrase based on how many distinct actors. With 1
+    # actor + multiple signal types, the convergence is in the *signal-type*
+    # dimension, not the actor dimension — phrase it accordingly.
+    if len(actors) >= 3:
+        actor_phrase = f"{actor_str} all touched it"
+    elif len(actors) == 2:
+        actor_phrase = f"{actor_str} both touched it"
+    elif len(actors) == 1:
+        actor_phrase = (f"{actor_str} touched it across multiple independent "
+                        f"signal types")
+    else:
+        actor_phrase = "multiple independent signal types fired on it"
     sentence = (f"{label} is the name to look at{where}: "
-                f"{actor_str} {'both' if len(actors)==2 else ('all' if len(actors)>=3 else '')}"
-                f" touched it within the last {config.CONVERGENCE_WINDOW_DAYS} days, "
+                f"{actor_phrase} within the last {config.CONVERGENCE_WINDOW_DAYS} days, "
                 f"first on {earliest['event_date']} via "
                 f"{_humanize_kind(earliest['kind'])}, most recently on "
                 f"{most_recent['event_date']} via "
